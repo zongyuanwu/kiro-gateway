@@ -34,7 +34,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from loguru import logger
 
-from kiro.config import PROXY_API_KEY
+from kiro.config import PROXY_API_KEY, PROXY_API_KEY_MAP
+from kiro.usage_stats import UsageStats
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
@@ -69,32 +70,33 @@ auth_header = APIKeyHeader(name="Authorization", auto_error=False)
 async def verify_anthropic_api_key(
     x_api_key: Optional[str] = Security(anthropic_api_key_header),
     authorization: Optional[str] = Security(auth_header)
-) -> bool:
+) -> str:
     """
     Verify API key for Anthropic API.
-    
+
     Supports two authentication methods:
     1. x-api-key header (Anthropic native)
     2. Authorization: Bearer header (for compatibility)
-    
-    Args:
-        x_api_key: Value from x-api-key header
-        authorization: Value from Authorization header
-    
+
     Returns:
-        True if key is valid
-    
+        Client name associated with the key
+
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
     # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == PROXY_API_KEY:
-        return True
-    
+    if x_api_key:
+        client_name = PROXY_API_KEY_MAP.get(x_api_key)
+        if client_name:
+            return client_name
+
     # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {PROXY_API_KEY}":
-        return True
-    
+    if authorization and authorization.startswith("Bearer "):
+        key = authorization[7:]
+        client_name = PROXY_API_KEY_MAP.get(key)
+        if client_name:
+            return client_name
+
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")
     raise HTTPException(
         status_code=401,
@@ -112,10 +114,11 @@ async def verify_anthropic_api_key(
 router = APIRouter(tags=["Anthropic API"])
 
 
-@router.post("/v1/messages", dependencies=[Depends(verify_anthropic_api_key)])
+@router.post("/v1/messages")
 async def messages(
     request: Request,
     request_data: AnthropicMessagesRequest,
+    client_name: str = Depends(verify_anthropic_api_key),
     anthropic_version: Optional[str] = Header(None, alias="anthropic-version")
 ):
     """
@@ -148,6 +151,7 @@ async def messages(
     
     auth_manager: KiroAuthManager = request.app.state.auth_manager
     model_cache: ModelInfoCache = request.app.state.model_cache
+    usage_stats: UsageStats = request.app.state.usage_stats
     
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
@@ -340,6 +344,8 @@ async def messages(
             logger.warning(
                 f"HTTP {response.status_code} - POST /v1/messages - {error_message[:100]}"
             )
+
+            usage_stats.record_request(client_name, request_data.model, success=False)
             
             # Flush debug logs on error
             if debug_logger:
@@ -362,6 +368,8 @@ async def messages(
             async def stream_wrapper():
                 streaming_error = None
                 client_disconnected = False
+                tracked_input_tokens = 0
+                tracked_output_tokens = 0
                 try:
                     async for chunk in stream_kiro_to_anthropic(
                         response,
@@ -370,6 +378,20 @@ async def messages(
                         auth_manager,
                         request_messages=messages_for_tokenizer
                     ):
+                        # Extract token counts from SSE events
+                        for line in chunk.split("\n"):
+                            if line.startswith("data: "):
+                                try:
+                                    data = json.loads(line[6:])
+                                    evt_type = data.get("type", "")
+                                    if evt_type == "message_start":
+                                        usage = data.get("message", {}).get("usage", {})
+                                        tracked_input_tokens = usage.get("input_tokens", 0)
+                                    elif evt_type == "message_delta":
+                                        usage = data.get("usage", {})
+                                        tracked_output_tokens = usage.get("output_tokens", tracked_output_tokens)
+                                except (json.JSONDecodeError, AttributeError):
+                                    pass
                         yield chunk
                 except GeneratorExit:
                     client_disconnected = True
@@ -384,6 +406,11 @@ async def messages(
                         pass
                 finally:
                     await http_client.close()
+                    usage_stats.record_request(
+                        client_name, request_data.model, success=not streaming_error,
+                        input_tokens=tracked_input_tokens,
+                        output_tokens=tracked_output_tokens,
+                    )
                     if streaming_error:
                         error_type = type(streaming_error).__name__
                         error_msg = str(streaming_error) if str(streaming_error) else "(empty message)"
@@ -419,22 +446,31 @@ async def messages(
             )
             
             await http_client.close()
-            
+
+            # Extract token counts from response for usage tracking
+            resp_usage = anthropic_response.get("usage", {})
+            usage_stats.record_request(
+                client_name, request_data.model, success=True,
+                input_tokens=resp_usage.get("input_tokens", 0),
+                output_tokens=resp_usage.get("output_tokens", 0),
+            )
             logger.info(f"HTTP 200 - POST /v1/messages (non-streaming) - completed")
-            
+
             if debug_logger:
                 debug_logger.discard_buffers()
-            
+
             return JSONResponse(content=anthropic_response)
     
     except HTTPException as e:
         await http_client.close()
+        usage_stats.record_request(client_name, request_data.model, success=False)
         logger.error(f"HTTP {e.status_code} - POST /v1/messages - {e.detail}")
         if debug_logger:
             debug_logger.flush_on_error(e.status_code, str(e.detail))
         raise
     except Exception as e:
         await http_client.close()
+        usage_stats.record_request(client_name, request_data.model, success=False)
         logger.error(f"Internal error: {e}", exc_info=True)
         logger.error(f"HTTP 500 - POST /v1/messages - {str(e)[:100]}")
         if debug_logger:

@@ -36,8 +36,10 @@ from loguru import logger
 
 from kiro.config import (
     PROXY_API_KEY,
+    PROXY_API_KEY_MAP,
     APP_VERSION,
 )
+from kiro.usage_stats import UsageStats
 from kiro.models_openai import (
     OpenAIModel,
     ModelList,
@@ -62,25 +64,25 @@ except ImportError:
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
-async def verify_api_key(auth_header: str = Security(api_key_header)) -> bool:
+async def verify_api_key(auth_header: str = Security(api_key_header)) -> str:
     """
     Verify API key in Authorization header.
-    
+
     Expects format: "Bearer {PROXY_API_KEY}"
-    
-    Args:
-        auth_header: Authorization header value
-    
+
     Returns:
-        True if key is valid
-    
+        Client name associated with the key
+
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    if not auth_header or auth_header != f"Bearer {PROXY_API_KEY}":
-        logger.warning("Access attempt with invalid API key.")
-        raise HTTPException(status_code=401, detail="Invalid or missing API Key")
-    return True
+    if auth_header and auth_header.startswith("Bearer "):
+        key = auth_header[7:]
+        client_name = PROXY_API_KEY_MAP.get(key)
+        if client_name:
+            return client_name
+    logger.warning("Access attempt with invalid API key.")
+    raise HTTPException(status_code=401, detail="Invalid or missing API Key")
 
 
 # --- Router ---
@@ -116,8 +118,8 @@ async def health():
         "version": APP_VERSION
     }
 
-@router.get("/v1/models", response_model=ModelList, dependencies=[Depends(verify_api_key)])
-async def get_models(request: Request):
+@router.get("/v1/models", response_model=ModelList)
+async def get_models(request: Request, client_name: str = Depends(verify_api_key)):
     """
     Return list of available models.
     
@@ -150,8 +152,8 @@ async def get_models(request: Request):
     return ModelList(data=openai_models)
 
 
-@router.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
-async def chat_completions(request: Request, request_data: ChatCompletionRequest):
+@router.post("/v1/chat/completions")
+async def chat_completions(request: Request, request_data: ChatCompletionRequest, client_name: str = Depends(verify_api_key)):
     """
     Chat completions endpoint - compatible with OpenAI API.
     
@@ -173,6 +175,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     
     auth_manager: KiroAuthManager = request.app.state.auth_manager
     model_cache: ModelInfoCache = request.app.state.model_cache
+    usage_stats: UsageStats = request.app.state.usage_stats
     
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
@@ -307,6 +310,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             logger.warning(
                 f"HTTP {response.status_code} - POST /v1/chat/completions - {error_message[:100]}"
             )
+
+            usage_stats.record_request(client_name, request_data.model, success=False)
             
             # Flush debug logs on error ("errors" mode)
             if debug_logger:
@@ -334,6 +339,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             async def stream_wrapper():
                 streaming_error = None
                 client_disconnected = False
+                tracked_prompt_tokens = 0
+                tracked_completion_tokens = 0
                 try:
                     async for chunk in stream_kiro_to_openai(
                         http_client.client,
@@ -344,6 +351,16 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         request_messages=messages_for_tokenizer,
                         request_tools=tools_for_tokenizer
                     ):
+                        # Extract token counts from the final chunk's usage field
+                        if chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
+                            try:
+                                data = json.loads(chunk[6:])
+                                usage = data.get("usage")
+                                if usage:
+                                    tracked_prompt_tokens = usage.get("prompt_tokens", 0)
+                                    tracked_completion_tokens = usage.get("completion_tokens", 0)
+                            except (json.JSONDecodeError, AttributeError):
+                                pass
                         yield chunk
                 except GeneratorExit:
                     # Client disconnected - this is normal
@@ -360,6 +377,11 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                     raise
                 finally:
                     await http_client.close()
+                    usage_stats.record_request(
+                        client_name, request_data.model, success=not streaming_error,
+                        input_tokens=tracked_prompt_tokens,
+                        output_tokens=tracked_completion_tokens,
+                    )
                     # Log access log for streaming (success or error)
                     if streaming_error:
                         error_type = type(streaming_error).__name__
@@ -392,7 +414,15 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             )
             
             await http_client.close()
-            
+
+            # Extract token counts from response for usage tracking
+            resp_usage = openai_response.get("usage", {})
+            usage_stats.record_request(
+                client_name, request_data.model, success=True,
+                input_tokens=resp_usage.get("prompt_tokens", 0),
+                output_tokens=resp_usage.get("completion_tokens", 0),
+            )
+
             # Log access log for non-streaming success
             logger.info(f"HTTP 200 - POST /v1/chat/completions (non-streaming) - completed")
             
@@ -404,6 +434,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     
     except HTTPException as e:
         await http_client.close()
+        usage_stats.record_request(client_name, request_data.model, success=False)
         # Log access log for HTTP error
         logger.error(f"HTTP {e.status_code} - POST /v1/chat/completions - {e.detail}")
         # Flush debug logs on HTTP error ("errors" mode)
@@ -412,6 +443,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         raise
     except Exception as e:
         await http_client.close()
+        usage_stats.record_request(client_name, request_data.model, success=False)
         logger.error(f"Internal error: {e}", exc_info=True)
         # Log access log for internal error
         logger.error(f"HTTP 500 - POST /v1/chat/completions - {str(e)[:100]}")
@@ -419,3 +451,16 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         if debug_logger:
             debug_logger.flush_on_error(500, str(e))
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+@router.get("/v1/usage")
+async def get_usage(request: Request, client_name: str = Depends(verify_api_key)):
+    usage_stats: UsageStats = request.app.state.usage_stats
+    return JSONResponse(content=usage_stats.get_stats())
+
+
+@router.delete("/v1/usage")
+async def reset_usage(request: Request, client_name: str = Depends(verify_api_key)):
+    usage_stats: UsageStats = request.app.state.usage_stats
+    usage_stats.reset_stats()
+    return JSONResponse(content={"status": "ok", "message": "Usage stats reset"})

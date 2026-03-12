@@ -73,6 +73,8 @@ from kiro.config import (
     HIDDEN_FROM_LIST,
     FALLBACK_MODELS,
     VPN_PROXY_URL,
+    USAGE_STATS_FILE,
+    USAGE_STATS_SAVE_EVERY,
     _warn_timeout_configuration,
 )
 from kiro.auth import KiroAuthManager
@@ -82,6 +84,7 @@ from kiro.routes_openai import router as openai_router
 from kiro.routes_anthropic import router as anthropic_router
 from kiro.exceptions import validation_exception_handler
 from kiro.debug_middleware import DebugLoggerMiddleware
+from kiro.usage_stats import UsageStats
 
 
 # --- Loguru Configuration ---
@@ -347,6 +350,12 @@ async def lifespan(app: FastAPI):
     
     # Create model cache
     app.state.model_cache = ModelInfoCache()
+
+    # Create usage stats tracker (with optional disk persistence)
+    app.state.usage_stats = UsageStats(
+        persist_path=USAGE_STATS_FILE if USAGE_STATS_FILE else None,
+        save_every=USAGE_STATS_SAVE_EVERY,
+    )
     
     # BLOCKING: Load models from Kiro API at startup
     # This ensures the cache is populated BEFORE accepting any requests.
@@ -420,6 +429,7 @@ async def lifespan(app: FastAPI):
     
     # Graceful shutdown
     logger.info("Shutting down application...")
+    app.state.usage_stats.flush()
     try:
         await app.state.http_client.aclose()
         logger.info("Shared HTTP client closed")

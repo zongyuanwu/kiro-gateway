@@ -98,6 +98,32 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
 # API key for proxy access (clients must pass it in Authorization header)
 PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "my-super-secret-password-123")
 
+# Multi-client API keys: maps client names to API keys
+# Format: "alice:key-alice-123,bob:key-bob-456"
+# Falls back to single PROXY_API_KEY with client name "default" if not set
+_PROXY_API_KEYS_RAW: str = os.getenv("PROXY_API_KEYS", "")
+
+
+def _parse_proxy_api_keys() -> Dict[str, str]:
+    """Parse PROXY_API_KEYS env var into {key: client_name} lookup dict."""
+    key_to_client: Dict[str, str] = {}
+    if _PROXY_API_KEYS_RAW:
+        for entry in _PROXY_API_KEYS_RAW.split(","):
+            entry = entry.strip()
+            if ":" in entry:
+                name, key = entry.split(":", 1)
+                name, key = name.strip(), key.strip()
+                if name and key:
+                    key_to_client[key] = name
+    # Always include the single PROXY_API_KEY as fallback
+    if PROXY_API_KEY and PROXY_API_KEY not in key_to_client:
+        key_to_client[PROXY_API_KEY] = "default"
+    return key_to_client
+
+
+# Lookup: api_key -> client_name
+PROXY_API_KEY_MAP: Dict[str, str] = _parse_proxy_api_keys()
+
 # ==================================================================================================
 # VPN/Proxy Settings for Kiro API Access
 # ==================================================================================================
@@ -359,6 +385,21 @@ else:
 
 # Directory for debug log files
 DEBUG_DIR: str = os.getenv("DEBUG_DIR", "debug_logs")
+
+# ==================================================================================================
+# Usage Statistics Persistence
+# ==================================================================================================
+
+# Path to the JSON file for persisting per-client usage statistics across restarts.
+# Leave empty to keep stats in memory only (lost on restart).
+# Default: "usage_stats.json" (in the working directory)
+USAGE_STATS_FILE: str = os.getenv("USAGE_STATS_FILE", "usage_stats.json")
+
+# How often to flush usage stats to disk (in number of requests).
+# Lower values = more durable but more I/O. Higher values = less I/O but more data at risk.
+# Stats are always flushed on graceful shutdown regardless of this setting.
+# Default: 100
+USAGE_STATS_SAVE_EVERY: int = int(os.getenv("USAGE_STATS_SAVE_EVERY", "100"))
 
 
 def _warn_timeout_configuration():

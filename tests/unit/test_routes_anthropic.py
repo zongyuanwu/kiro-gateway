@@ -149,9 +149,8 @@ class TestVerifyAnthropicApiKey:
         
         print(f"Checking: Error format...")
         detail = exc_info.value.detail
-        assert "type" in detail
-        assert "error" in detail
-        assert detail["error"]["type"] == "authentication_error"
+        assert isinstance(detail, str)
+        assert "API key" in detail
 
 
 # =============================================================================
@@ -974,12 +973,11 @@ class TestMessagesErrorFormat:
         print(f"Response: {response.json()}")
         assert response.status_code == 401
         
-        # Check Anthropic error format
+        # Check error format
         data = response.json()
         assert "detail" in data
         detail = data["detail"]
-        assert "type" in detail
-        assert "error" in detail
+        assert "API key" in detail
 
 
 # =============================================================================

@@ -251,6 +251,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             profile_arn_for_payload
         )
     except ValueError as e:
+        await token_pool.release(auth_manager)
         raise HTTPException(status_code=400, detail=str(e))
     
     # Log Kiro payload
@@ -293,7 +294,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 error_content = b"Unknown error"
             
             await http_client.close()
-            token_pool.release(auth_manager)
+            await token_pool.release(auth_manager)
             error_text = error_content.decode('utf-8', errors='replace')
             
             # Try to parse JSON response from Kiro to extract error message
@@ -371,16 +372,22 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                     logger.debug("Client disconnected during streaming (GeneratorExit in routes)")
                 except Exception as e:
                     streaming_error = e
-                    # Try to send [DONE] to client before finishing
-                    # so client doesn't "hang" waiting for data
+                    # Send error event to client before finishing
                     try:
+                        error_event = json.dumps({
+                            "error": {
+                                "message": str(e),
+                                "type": "server_error",
+                                "code": 500
+                            }
+                        })
+                        yield f"data: {error_event}\n\n"
                         yield "data: [DONE]\n\n"
                     except Exception:
                         pass  # Client already disconnected
-                    raise
                 finally:
                     await http_client.close()
-                    token_pool.release(auth_manager)
+                    await token_pool.release(auth_manager)
                     usage_stats.record_request(
                         client_name, request_data.model, success=not streaming_error,
                         input_tokens=tracked_prompt_tokens,
@@ -418,7 +425,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             )
             
             await http_client.close()
-            token_pool.release(auth_manager)
+            await token_pool.release(auth_manager)
 
             # Extract token counts from response for usage tracking
             resp_usage = openai_response.get("usage", {})
@@ -439,7 +446,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     
     except HTTPException as e:
         await http_client.close()
-        token_pool.release(auth_manager)
+        await token_pool.release(auth_manager)
         usage_stats.record_request(client_name, request_data.model, success=False)
         # Log access log for HTTP error
         logger.error(f"HTTP {e.status_code} - POST /v1/chat/completions - {e.detail}")
@@ -449,7 +456,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         raise
     except Exception as e:
         await http_client.close()
-        token_pool.release(auth_manager)
+        await token_pool.release(auth_manager)
         usage_stats.record_request(client_name, request_data.model, success=False)
         logger.error(f"Internal error: {e}", exc_info=True)
         # Log access log for internal error

@@ -11,9 +11,13 @@ import asyncio
 import json
 import pytest
 import time
+import os
 from typing import AsyncGenerator, Dict, Any, List
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from datetime import datetime, timezone
+
+# Set test API key BEFORE any kiro modules are imported (config loads at import time)
+os.environ.setdefault("PROXY_API_KEY", "test-api-key-for-testing")
 
 import httpx
 from fastapi.testclient import TestClient

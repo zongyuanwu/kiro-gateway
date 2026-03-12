@@ -223,76 +223,78 @@ class KiroAuthManager:
             if not path.exists():
                 logger.warning(f"SQLite database not found: {db_path}")
                 return
-            
+
             conn = sqlite3.connect(str(path))
-            cursor = conn.cursor()
-            
-            # Try all possible token keys in priority order
-            token_row = None
-            for key in SQLITE_TOKEN_KEYS:
-                cursor.execute("SELECT value FROM auth_kv WHERE key = ?", (key,))
-                token_row = cursor.fetchone()
+            try:
+                cursor = conn.cursor()
+
+                # Try all possible token keys in priority order
+                token_row = None
+                for key in SQLITE_TOKEN_KEYS:
+                    cursor.execute("SELECT value FROM auth_kv WHERE key = ?", (key,))
+                    token_row = cursor.fetchone()
+                    if token_row:
+                        self._sqlite_token_key = key  # Remember which key we loaded from
+                        logger.debug(f"Loaded credentials from SQLite key: {key}")
+                        break
+
                 if token_row:
-                    self._sqlite_token_key = key  # Remember which key we loaded from
-                    logger.debug(f"Loaded credentials from SQLite key: {key}")
-                    break
-            
-            if token_row:
-                token_data = json.loads(token_row[0])
-                if token_data:
-                    # Load token fields (using snake_case as in Rust struct)
-                    if 'access_token' in token_data:
-                        self._access_token = token_data['access_token']
-                    if 'refresh_token' in token_data:
-                        self._refresh_token = token_data['refresh_token']
-                    if 'profile_arn' in token_data:
-                        self._profile_arn = token_data['profile_arn']
-                    if 'region' in token_data:
-                        # Store SSO region for OIDC token refresh only
-                        # IMPORTANT: CodeWhisperer API is only available in us-east-1,
-                        # so we don't update _api_host and _q_host here.
-                        # The SSO region (e.g., ap-southeast-1) is only used for OIDC token refresh.
-                        self._sso_region = token_data['region']
-                        logger.debug(f"SSO region from SQLite: {self._sso_region} (API stays at {self._region})")
-                    
-                    # Load scopes if available
-                    if 'scopes' in token_data:
-                        self._scopes = token_data['scopes']
-                    
-                    # Parse expires_at (RFC3339 format)
-                    if 'expires_at' in token_data:
-                        try:
-                            expires_str = token_data['expires_at']
-                            # Handle various ISO 8601 formats
-                            if expires_str.endswith('Z'):
-                                self._expires_at = datetime.fromisoformat(expires_str.replace('Z', '+00:00'))
-                            else:
-                                self._expires_at = datetime.fromisoformat(expires_str)
-                        except Exception as e:
-                            logger.warning(f"Failed to parse expires_at from SQLite: {e}")
-            
-            # Load device registration (client_id, client_secret) - try all possible keys
-            registration_row = None
-            for key in SQLITE_REGISTRATION_KEYS:
-                cursor.execute("SELECT value FROM auth_kv WHERE key = ?", (key,))
-                registration_row = cursor.fetchone()
+                    token_data = json.loads(token_row[0])
+                    if token_data:
+                        # Load token fields (using snake_case as in Rust struct)
+                        if 'access_token' in token_data:
+                            self._access_token = token_data['access_token']
+                        if 'refresh_token' in token_data:
+                            self._refresh_token = token_data['refresh_token']
+                        if 'profile_arn' in token_data:
+                            self._profile_arn = token_data['profile_arn']
+                        if 'region' in token_data:
+                            # Store SSO region for OIDC token refresh only
+                            # IMPORTANT: CodeWhisperer API is only available in us-east-1,
+                            # so we don't update _api_host and _q_host here.
+                            # The SSO region (e.g., ap-southeast-1) is only used for OIDC token refresh.
+                            self._sso_region = token_data['region']
+                            logger.debug(f"SSO region from SQLite: {self._sso_region} (API stays at {self._region})")
+
+                        # Load scopes if available
+                        if 'scopes' in token_data:
+                            self._scopes = token_data['scopes']
+
+                        # Parse expires_at (RFC3339 format)
+                        if 'expires_at' in token_data:
+                            try:
+                                expires_str = token_data['expires_at']
+                                # Handle various ISO 8601 formats
+                                if expires_str.endswith('Z'):
+                                    self._expires_at = datetime.fromisoformat(expires_str.replace('Z', '+00:00'))
+                                else:
+                                    self._expires_at = datetime.fromisoformat(expires_str)
+                            except Exception as e:
+                                logger.warning(f"Failed to parse expires_at from SQLite: {e}")
+
+                # Load device registration (client_id, client_secret) - try all possible keys
+                registration_row = None
+                for key in SQLITE_REGISTRATION_KEYS:
+                    cursor.execute("SELECT value FROM auth_kv WHERE key = ?", (key,))
+                    registration_row = cursor.fetchone()
+                    if registration_row:
+                        logger.debug(f"Loaded device registration from SQLite key: {key}")
+                        break
+
                 if registration_row:
-                    logger.debug(f"Loaded device registration from SQLite key: {key}")
-                    break
-            
-            if registration_row:
-                registration_data = json.loads(registration_row[0])
-                if registration_data:
-                    if 'client_id' in registration_data:
-                        self._client_id = registration_data['client_id']
-                    if 'client_secret' in registration_data:
-                        self._client_secret = registration_data['client_secret']
-                    # SSO region from registration (fallback if not in token data)
-                    if 'region' in registration_data and not self._sso_region:
-                        self._sso_region = registration_data['region']
-                        logger.debug(f"SSO region from device-registration: {self._sso_region}")
-            
-            conn.close()
+                    registration_data = json.loads(registration_row[0])
+                    if registration_data:
+                        if 'client_id' in registration_data:
+                            self._client_id = registration_data['client_id']
+                        if 'client_secret' in registration_data:
+                            self._client_secret = registration_data['client_secret']
+                        # SSO region from registration (fallback if not in token data)
+                        if 'region' in registration_data and not self._sso_region:
+                            self._sso_region = registration_data['region']
+                            logger.debug(f"SSO region from device-registration: {self._sso_region}")
+            finally:
+                conn.close()
+
             logger.info(f"Credentials loaded from SQLite database: {db_path}")
             
         except sqlite3.Error as e:
@@ -469,52 +471,52 @@ class KiroAuthManager:
             if not path.exists():
                 logger.warning(f"SQLite database not found for writing: {self._sqlite_db}")
                 return
-            
+
             # Use timeout to avoid blocking if database is locked
             conn = sqlite3.connect(str(path), timeout=5.0)
-            cursor = conn.cursor()
-            
-            # Prepare token data matching the structure from _load_credentials_from_sqlite
-            token_data = {
-                "access_token": self._access_token,
-                "refresh_token": self._refresh_token,
-                "expires_at": self._expires_at.isoformat() if self._expires_at else None,
-                "region": self._sso_region or self._region,
-            }
-            if self._scopes:
-                token_data["scopes"] = self._scopes
-            
-            token_json = json.dumps(token_data)
-            
-            # Save back to the same key we loaded from (if known)
-            if self._sqlite_token_key:
-                cursor.execute(
-                    "UPDATE auth_kv SET value = ? WHERE key = ?",
-                    (token_json, self._sqlite_token_key)
-                )
-                if cursor.rowcount > 0:
-                    conn.commit()
-                    conn.close()
-                    logger.debug(f"Credentials saved to SQLite key: {self._sqlite_token_key}")
-                    return
-                else:
-                    logger.warning(f"Failed to update SQLite key: {self._sqlite_token_key}, trying fallback")
-            
-            # Fallback: try all keys (for edge cases where source key is unknown)
-            for key in SQLITE_TOKEN_KEYS:
-                cursor.execute(
-                    "UPDATE auth_kv SET value = ? WHERE key = ?",
-                    (token_json, key)
-                )
-                if cursor.rowcount > 0:
-                    conn.commit()
-                    conn.close()
-                    logger.debug(f"Credentials saved to SQLite key: {key} (fallback)")
-                    return
-            
-            # If we get here, no keys were updated
-            conn.close()
-            logger.warning(f"Failed to save credentials to SQLite: no matching keys found")
+            try:
+                cursor = conn.cursor()
+
+                # Prepare token data matching the structure from _load_credentials_from_sqlite
+                token_data = {
+                    "access_token": self._access_token,
+                    "refresh_token": self._refresh_token,
+                    "expires_at": self._expires_at.isoformat() if self._expires_at else None,
+                    "region": self._sso_region or self._region,
+                }
+                if self._scopes:
+                    token_data["scopes"] = self._scopes
+
+                token_json = json.dumps(token_data)
+
+                # Save back to the same key we loaded from (if known)
+                if self._sqlite_token_key:
+                    cursor.execute(
+                        "UPDATE auth_kv SET value = ? WHERE key = ?",
+                        (token_json, self._sqlite_token_key)
+                    )
+                    if cursor.rowcount > 0:
+                        conn.commit()
+                        logger.debug(f"Credentials saved to SQLite key: {self._sqlite_token_key}")
+                        return
+                    else:
+                        logger.warning(f"Failed to update SQLite key: {self._sqlite_token_key}, trying fallback")
+
+                # Fallback: try all keys (for edge cases where source key is unknown)
+                for key in SQLITE_TOKEN_KEYS:
+                    cursor.execute(
+                        "UPDATE auth_kv SET value = ? WHERE key = ?",
+                        (token_json, key)
+                    )
+                    if cursor.rowcount > 0:
+                        conn.commit()
+                        logger.debug(f"Credentials saved to SQLite key: {key} (fallback)")
+                        return
+
+                # If we get here, no keys were updated
+                logger.warning(f"Failed to save credentials to SQLite: no matching keys found")
+            finally:
+                conn.close()
             
         except sqlite3.Error as e:
             logger.error(f"SQLite error saving credentials: {e}")
@@ -606,7 +608,7 @@ class KiroAuthManager:
         new_profile_arn = data.get("profileArn")
         
         if not new_access_token:
-            raise ValueError(f"Response does not contain accessToken: {data}")
+            raise ValueError("Response does not contain accessToken")
         
         # Update data
         self._access_token = new_access_token
@@ -616,11 +618,7 @@ class KiroAuthManager:
             self._profile_arn = new_profile_arn
         
         # Calculate expiration time with buffer (minus 60 seconds)
-        self._expires_at = datetime.now(timezone.utc).replace(microsecond=0)
-        self._expires_at = datetime.fromtimestamp(
-            self._expires_at.timestamp() + expires_in - 60,
-            tz=timezone.utc
-        )
+        self._expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
         
         logger.info(f"Token refreshed via Kiro Desktop Auth, expires: {self._expires_at.isoformat()}")
         
@@ -739,7 +737,7 @@ class KiroAuthManager:
         expires_in = result.get("expiresIn", 3600)
         
         if not new_access_token:
-            raise ValueError(f"AWS SSO OIDC response does not contain accessToken: {result}")
+            raise ValueError("AWS SSO OIDC response does not contain accessToken")
         
         # Update data
         self._access_token = new_access_token

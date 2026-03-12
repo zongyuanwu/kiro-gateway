@@ -72,6 +72,7 @@ class UsageStats:
             self._persist_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             self._dirty_count = 0
         except Exception as e:
+            # Don't reset _dirty_count so next save attempt will retry
             logger.warning(f"Failed to save usage stats to {self._persist_path}: {e}")
 
     def flush(self) -> None:

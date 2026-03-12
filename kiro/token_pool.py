@@ -3,7 +3,8 @@
 import asyncio
 import itertools
 import random
-from typing import List
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, List
 
 from loguru import logger
 
@@ -54,10 +55,20 @@ class TokenPool:
             logger.debug(f"Token pool: selected token #{idx} (strategy={self._strategy}, in_flight={self._in_flight})")
             return self._managers[idx]
 
-    def release(self, manager: KiroAuthManager) -> None:
+    async def release(self, manager: KiroAuthManager) -> None:
         """Decrement in-flight count when a request completes."""
+        async with self._lock:
+            try:
+                idx = self._managers.index(manager)
+                self._in_flight[idx] = max(0, self._in_flight[idx] - 1)
+            except ValueError:
+                logger.warning("Attempted to release an unknown auth manager")
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[KiroAuthManager]:
+        """Context manager that acquires and automatically releases an auth manager."""
+        manager = await self.get_auth_manager()
         try:
-            idx = self._managers.index(manager)
-            self._in_flight[idx] = max(0, self._in_flight[idx] - 1)
-        except ValueError:
-            pass
+            yield manager
+        finally:
+            await self.release(manager)

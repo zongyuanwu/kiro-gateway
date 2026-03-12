@@ -230,8 +230,32 @@ def validate_configuration() -> None:
     has_cli_db = bool(KIRO_CLI_DB_FILE)
     has_pool = bool(ALL_KIRO_CREDS_FILES or ALL_REFRESH_TOKENS or ALL_KIRO_CLI_DB_FILES)
 
-    # If token pool is configured, skip single-credential validation
+    # If token pool is configured, validate pool entries then return
     if has_pool:
+        # Validate that referenced creds files actually exist
+        for creds_file in ALL_KIRO_CREDS_FILES:
+            creds_path = Path(creds_file).expanduser()
+            if not creds_path.exists():
+                errors.append(f"KIRO_CREDS_FILE not found: {creds_file}")
+
+        # Validate that referenced SQLite DB files actually exist
+        for db_file in ALL_KIRO_CLI_DB_FILES:
+            db_path = Path(db_file).expanduser()
+            if not db_path.exists():
+                errors.append(f"KIRO_CLI_DB_FILE not found: {db_file}")
+
+        if errors:
+            logger.error("")
+            logger.error("=" * 60)
+            logger.error("  CONFIGURATION ERROR")
+            logger.error("=" * 60)
+            for error in errors:
+                for line in error.split('\n'):
+                    logger.error(f"  {line}")
+            logger.error("=" * 60)
+            logger.error("")
+            sys.exit(1)
+
         logger.info(f"Token pool configured: {len(ALL_KIRO_CREDS_FILES)} creds file(s), "
                      f"{len(ALL_REFRESH_TOKENS)} refresh token(s), "
                      f"{len(ALL_KIRO_CLI_DB_FILES)} SQLite DB(s)")

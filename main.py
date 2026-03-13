@@ -63,6 +63,9 @@ from kiro.config import (
     KIRO_CLI_DB_FILE,
     PROXY_API_KEY,
     LOG_LEVEL,
+    LOG_FILE,
+    LOG_ROTATION,
+    LOG_RETENTION,
     SERVER_HOST,
     SERVER_PORT,
     DEFAULT_SERVER_HOST,
@@ -94,11 +97,16 @@ from kiro.usage_stats import UsageStats
 
 # --- Loguru Configuration ---
 logger.remove()
+
+# File logging with auto-rotation
 logger.add(
-    sys.stderr,
+    LOG_FILE,
     level=LOG_LEVEL,
-    colorize=True,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+    rotation=LOG_ROTATION,
+    retention=LOG_RETENTION,
+    compression="gz",
+    encoding="utf-8",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
 )
 
 
@@ -670,39 +678,19 @@ def resolve_server_config(args: argparse.Namespace) -> tuple[str, int]:
 
 def print_startup_banner(host: str, port: int) -> None:
     """
-    Print a startup banner with server information.
-    
+    Log a startup banner with server information.
+
     Args:
         host: Server host address
         port: Server port
     """
-    # ANSI color codes
-    GREEN = "\033[92m"
-    CYAN = "\033[96m"
-    YELLOW = "\033[93m"
-    WHITE = "\033[97m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RESET = "\033[0m"
-    
-    # Determine display URL
     display_host = "localhost" if host == "0.0.0.0" else host
     url = f"http://{display_host}:{port}"
-    
-    print()
-    print(f"  {WHITE}{BOLD}👻 {APP_TITLE} v{APP_VERSION}{RESET}")
-    print()
-    print(f"  {WHITE}Server running at:{RESET}")
-    print(f"  {GREEN}{BOLD}➜  {url}{RESET}")
-    print()
-    print(f"  {DIM}API Docs:      {url}/docs{RESET}")
-    print(f"  {DIM}Health Check:  {url}/health{RESET}")
-    print()
-    print(f"  {DIM}{'─' * 48}{RESET}")
-    print(f"  {WHITE}💬 Found a bug? Need help? Have questions?{RESET}")
-    print(f"  {YELLOW}➜  https://github.com/jwadow/kiro-gateway/issues{RESET}")
-    print(f"  {DIM}{'─' * 48}{RESET}")
-    print()
+
+    logger.info(f"{APP_TITLE} v{APP_VERSION}")
+    logger.info(f"Server running at: {url}")
+    logger.info(f"API Docs: {url}/docs")
+    logger.info(f"Health Check: {url}/health")
 
 
 # --- Entry Point ---

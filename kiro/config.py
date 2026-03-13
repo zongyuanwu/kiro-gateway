@@ -412,6 +412,18 @@ TRUNCATION_RECOVERY: bool = os.getenv("TRUNCATION_RECOVERY", "true").lower() in 
 # Set to DEBUG for detailed troubleshooting
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
+# Log file path (default: None = no file logging, only stderr)
+# Example: LOG_FILE="logs/kiro-gateway.log"
+LOG_FILE: str = os.getenv("LOG_FILE", "kiro-gateway.log")
+
+# Log rotation size or time (default: "50 MB")
+# Examples: "50 MB", "100 MB", "1 GB", "00:00" (midnight), "1 week"
+LOG_ROTATION: str = os.getenv("LOG_ROTATION", "50 MB")
+
+# Log retention policy (default: "30 days")
+# Examples: "30 days", "10 files", "1 week"
+LOG_RETENTION: str = os.getenv("LOG_RETENTION", "30 days")
+
 # ==================================================================================================
 # First Token Timeout Settings (Streaming Retry)
 # ==================================================================================================
@@ -471,34 +483,20 @@ USAGE_STATS_SAVE_EVERY: int = int(os.getenv("USAGE_STATS_SAVE_EVERY", "100"))
 
 def _warn_timeout_configuration():
     """
-    Print warning if timeout configuration is suboptimal.
+    Log warning if timeout configuration is suboptimal.
     Called at application startup.
-    
+
     FIRST_TOKEN_TIMEOUT should be less than STREAMING_READ_TIMEOUT:
     - FIRST_TOKEN_TIMEOUT: time to wait for model to START responding
     - STREAMING_READ_TIMEOUT: time to wait BETWEEN chunks during streaming
     """
     if FIRST_TOKEN_TIMEOUT >= STREAMING_READ_TIMEOUT:
-        import sys
-        YELLOW = "\033[93m"
-        RESET = "\033[0m"
-        
-        warning_text = f"""
-{YELLOW}⚠️  WARNING: Suboptimal timeout configuration detected.
-    
-    FIRST_TOKEN_TIMEOUT ({FIRST_TOKEN_TIMEOUT}s) >= STREAMING_READ_TIMEOUT ({STREAMING_READ_TIMEOUT}s)
-    
-    These timeouts serve different purposes:
-      - FIRST_TOKEN_TIMEOUT: time to wait for model to START responding (default: 15s)
-      - STREAMING_READ_TIMEOUT: time to wait BETWEEN chunks during streaming (default: 300s)
-    
-    Recommendation: FIRST_TOKEN_TIMEOUT should be LESS than STREAMING_READ_TIMEOUT.
-    
-    Example configuration:
-      FIRST_TOKEN_TIMEOUT=15
-      STREAMING_READ_TIMEOUT=300{RESET}
-"""
-        print(warning_text, file=sys.stderr)
+        from loguru import logger
+        logger.warning(
+            f"Suboptimal timeout configuration: "
+            f"FIRST_TOKEN_TIMEOUT ({FIRST_TOKEN_TIMEOUT}s) >= STREAMING_READ_TIMEOUT ({STREAMING_READ_TIMEOUT}s). "
+            f"FIRST_TOKEN_TIMEOUT should be LESS than STREAMING_READ_TIMEOUT."
+        )
 
 # ==================================================================================================
 # Fake Reasoning Settings (Extended Thinking via Tag Injection)

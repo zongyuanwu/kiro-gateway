@@ -162,23 +162,28 @@ def normalize_model_name(name: str) -> str:
     return name
 
 
-def get_model_id_for_kiro(model_name: str, hidden_models: Dict[str, str]) -> str:
+def get_model_id_for_kiro(
+    model_name: str,
+    hidden_models: Dict[str, str],
+    redirects: Optional[Dict[str, str]] = None
+) -> str:
     """
     Get the model ID to send to Kiro API.
-    
+
     This is a simple helper for converters that don't have access to the full
-    ModelResolver. It normalizes the name and checks hidden models.
-    
+    ModelResolver. It normalizes the name, applies redirects, and checks hidden models.
+
     For hidden models (like claude-3.7-sonnet), returns the internal Kiro ID.
     For regular models, returns the normalized name.
-    
+
     Args:
         model_name: External model name from client
         hidden_models: Dict mapping display names to internal Kiro IDs
-    
+        redirects: Optional dict mapping unsupported normalized names to supported ones
+
     Returns:
         Model ID to send to Kiro API
-    
+
     Examples:
         >>> get_model_id_for_kiro("claude-haiku-4-5-20251001", {})
         'claude-haiku-4.5'
@@ -186,8 +191,14 @@ def get_model_id_for_kiro(model_name: str, hidden_models: Dict[str, str]) -> str
         'CLAUDE_3_7_SONNET_20250219_V1_0'
         >>> get_model_id_for_kiro("claude-3-7-sonnet", {"claude-3.7-sonnet": "CLAUDE_3_7_SONNET_20250219_V1_0"})
         'CLAUDE_3_7_SONNET_20250219_V1_0'
+        >>> get_model_id_for_kiro("claude-opus-4-7", {}, {"claude-opus-4.7": "claude-opus-4.6"})
+        'claude-opus-4.6'
     """
     normalized = normalize_model_name(model_name)
+    if redirects and normalized in redirects:
+        redirected = redirects[normalized]
+        logger.info(f"Model redirect: '{normalized}' → '{redirected}'")
+        normalized = redirected
     return hidden_models.get(normalized, normalized)
 
 
